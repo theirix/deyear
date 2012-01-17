@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 #include <iostream>
 #include <taglib/taglib.h>
 #include <taglib/fileref.h>
@@ -11,6 +12,7 @@
 #include <taglib/id3v2header.h>
 #include <taglib/textidentificationframe.h>
 
+// Return frame of specified type or NULL
 TagLib::ID3v2::Frame* frameOfType (const TagLib::String& s, const TagLib::ID3v2::FrameListMap& fmap)
 {
 	return fmap[s.data( TagLib::String::Latin1 ) ].isEmpty()
@@ -18,11 +20,13 @@ TagLib::ID3v2::Frame* frameOfType (const TagLib::String& s, const TagLib::ID3v2:
 		: fmap[s.data( TagLib::String::Latin1 )].front();
 }
 
+// Checks for non-empty frame
 bool isFrameOk (const TagLib::ID3v2::Frame* frame)
 {
 	return frame && !frame->toString().isEmpty();
 }
 
+// Find any existing frame from the list
 bool isAnyOfFrames(const TagLib::StringList& possibleFrames, const TagLib::ID3v2::FrameListMap& fmap)
 {
 	for (TagLib::StringList::ConstIterator it = possibleFrames.begin(); it != possibleFrames.end(); it++)
@@ -31,6 +35,8 @@ bool isAnyOfFrames(const TagLib::StringList& possibleFrames, const TagLib::ID3v2
 	return false;
 }
 
+// Locate among specified frame types non-empty frame with an year.
+// If last argument is specified exclude it from the search
 TagLib::ID3v2::Frame* findFrameWithYear (const TagLib::StringList& possibleFrames, const TagLib::ID3v2::FrameListMap& fmap,
 			const TagLib::String exceptThisFrame)
 {
@@ -46,6 +52,14 @@ TagLib::ID3v2::Frame* findFrameWithYear (const TagLib::StringList& possibleFrame
 	return NULL;
 }
 
+// Add text frame T* to the tag
+void addTextFrame (const TagLib::String& frameId, const TagLib::String year, TagLib::ID3v2::Tag* tag)
+{
+	TagLib::ID3v2::TextIdentificationFrame* newFrame = new TagLib::ID3v2::TextIdentificationFrame( frameId.data( TagLib::String::Latin1 ) );
+	newFrame->setText( year );
+	tag->addFrame( newFrame );
+}
+
 int main(int argc, char* argv[])
 {
 	if (argc == 1 || argc > 3)
@@ -56,8 +70,8 @@ int main(int argc, char* argv[])
 
 	const bool writeMode = argv[1] && !strcmp( argv[1], "yes" );
 	const char* filename = writeMode ? argv[2] : argv[1];
-	if (writeMode)
-		std::cout << "WRITE MODE" << std::endl;
+	//if (writeMode)
+	//	std::cout << "WRITE MODE" << std::endl;
 
 	TagLib::MPEG::File file(filename);
 	TagLib::ID3v2::Tag *tag = file.ID3v2Tag();
@@ -86,12 +100,15 @@ int main(int argc, char* argv[])
 	years24.append( "TDRL" );
 	years24.append( "TDOR" );
 
+	assert(years24.front() == "TDRC");
+
+	// Check whether there is a frame of any listed types
 	bool isYear23 = isAnyOfFrames( years23, tag->frameListMap() );
 	bool isYear24 = isAnyOfFrames( years24, tag->frameListMap() );
 
 	bool modified = false;
 
-	if (writeMode)
+	if (writeMode && false)
 	{
 		std::cout << "Before: " << std::endl;
 		for (TagLib::ID3v2::FrameList::ConstIterator it = tag->frameList().begin(); it != tag->frameList().end(); it++)
@@ -102,9 +119,33 @@ int main(int argc, char* argv[])
 		std::cout << "Fail. Not 2.4 tag: " << filename << std::endl;
 	else
 	{
-
 		bool shouldDrop23 = false;
 
+		// Test for multiple T* frames.
+		// According to 2.4 standard there must be only one T* frame of each kind
+		for (TagLib::StringList::ConstIterator it = years24.begin(); it != years24.end(); it++)
+		{
+			const TagLib::ID3v2::FrameList& fl = tag->frameListMap()[it->data( TagLib::String::Latin1 ) ];
+			if (fl.size() > 1)
+			{
+				TagLib::String year = fl.front()->toString();
+				std::cout << "Damaged. Multiple " << *it << " frames found " << std::endl;
+				std::cout << "Receipt. Remove all duplicated frames and replace with " << year << std::endl;
+				
+				TagLib::ID3v2::Frame* frame = NULL;
+				do 
+				{
+					frame = frameOfType( *it, tag->frameListMap() );
+					if (frame)
+						tag->removeFrame( frame );
+				} while (frame);
+				addTextFrame( years24.front(), year, tag );
+
+				modified = true;
+			}
+		}
+
+		// Set 2.4 frames from existing 2.3 frames 
 		if (isYear23 && !isYear24)
 		{
 			std::cout << "Damaged. 2.3 year exists but no 2.4 year" << std::endl;
@@ -112,14 +153,13 @@ int main(int argc, char* argv[])
 			if (frameWithYear)
 			{
 				std::cout << "Receipt: set TDRC tag from existing: " << frameWithYear->toString() << std::endl;
-				TagLib::ID3v2::TextIdentificationFrame* newFrame = new TagLib::ID3v2::TextIdentificationFrame( years24.front().data( TagLib::String::Latin1 ) );
-				newFrame->setText( frameWithYear->toString() );
-				tag->addFrame( newFrame );
-
+				addTextFrame( years24.front(), frameWithYear->toString(), tag );
+				modified = true;
 				shouldDrop23 = true;
 			}
 		}
 
+		// Drop 2.3 frames
 		if (isYear23 && isYear24)
 		{
 			std::cout << "Damaged. both 2.3 and 2.4 years" << std::endl;
@@ -137,7 +177,9 @@ int main(int argc, char* argv[])
 			}
 			modified = true;
 		}
-		
+
+		// Sometimes TDRC is set empty but other 2.4 year tags are not empty
+		// Set TDRC from them
 		TagLib::ID3v2::Frame* frameTDRC = frameOfType( years24.front(), tag->frameListMap() );
 		if (isYear24 && !isFrameOk( frameTDRC ))
 		{
@@ -154,9 +196,7 @@ int main(int argc, char* argv[])
 			{
 				std::cout << "Damaged. TDRC is empty but others are not" << std::endl;
 				std::cout << "Receipt: set TDRC tag from existing: " << frameWithYear->toString() << std::endl;
-				TagLib::ID3v2::TextIdentificationFrame* newFrame = new TagLib::ID3v2::TextIdentificationFrame( years24.front().data( TagLib::String::Latin1 ) );
-				newFrame->setText( frameWithYear->toString() );
-				tag->addFrame( newFrame );
+				addTextFrame( years24.front(), frameWithYear->toString(), tag );
 				modified = true;
 			}
 		}
@@ -167,6 +207,8 @@ int main(int argc, char* argv[])
 		std::cout << "After: " << std::endl;
 		for (TagLib::ID3v2::FrameList::ConstIterator it = tag->frameList().begin(); it != tag->frameList().end(); it++)
 			std::cout << "  " << (*it)->frameID() << " - \"" << (*it)->toString() << "\"" << std::endl;
+
+		// Actually write to file
 		if (writeMode)
 		{
 			std::cout << "Writing to file: " << filename << std::endl;

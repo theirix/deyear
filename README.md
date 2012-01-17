@@ -41,6 +41,7 @@ This little program tries to fix buggy 2.4 tags with some heuristics:
  * removes empty ("empty" means empty string) frames
  * migrate old 2.3 frame to 2.4
  * copy TDRL tag to TDRC (maybe it isn't correct)
+ * remove duplicated frames (standard allows only one frame of each type)
 
 How to run
 ------
